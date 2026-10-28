@@ -1,711 +1,368 @@
-# 🦾 HandProyect — Instalación en Kali Linux
+# 🦾 HandProyect — Mano biónica con ESP32-S3
 
-Sistema de control de una mano robótica mediante **visión artificial**, utilizando Python, OpenCV, MediaPipe, comunicación Serial y Arduino.
+Control de una mano robótica mediante **visión artificial**: la webcam lee tu mano con
+**MediaPipe**, Python calcula cuánto está abierto cada dedo (0-100 %) y la **ESP32-S3**
+mueve 5 servos a través de un **PCA9685**. Funciona por **USB** o **sin cable por WiFi**, y
+la ESP32 tiene además su propio **panel web** para controlarla desde el móvil.
 
-Este documento explica cómo instalar y ejecutar **HandProyect** en un equipo con **Kali Linux**.
+Incluye una **aplicación de escritorio completa** (`mano_app.py`) con cámara, control manual,
+editor de secuencias, calibración guiada, gráficas en tiempo real y consola.
 
----
+## ✨ Novedades respecto a la versión Arduino UNO
 
-## 📋 Requisitos
+| | Antes (Arduino UNO) | Ahora (ESP32-S3) |
+|---|---|---|
+| Movimiento | Solo abierto / cerrado | **Proporcional 0-100 %** (los dedos copian la posición real) + modo binario con `B` |
+| Conexión | Solo USB, puerto `COM9` fijo | **USB autodetectado** (Linux y Windows) o **WiFi UDP** |
+| Control sin PC | No | **Panel web** en `http://mano.local`: sliders, gestos, demo |
+| Programa en el PC | Ventana OpenCV | **App de escritorio** con 6 pestañas (ver abajo) + versión ligera `hand_control.py` |
+| Calibración | Cambiar el código | **Por dedo, desde la web o por serie, guardada en la flash** |
+| Calibración de cámara | No | **Teclas `A` / `C`** ajustan a tu mano y se guardan |
+| Seguridad | Timeout | Timeout con **apertura lenta**, arranque escalonado de servos, `RELAX` |
+| MediaPipe | API antigua `mp.solutions` (**ya no existe** en mediapipe ≥ 0.10.30 / Python 3.13) | Nueva API **HandLandmarker** (Tasks) con coordenadas 3D reales |
 
-### Hardware
-
-* PC con Kali Linux
-* Webcam
-* Arduino UNO
-* PCA9685
-* 5 servomotores
-* Mano robótica
-* Cable USB para Arduino
-* Fuente externa para los servomotores
-
-### Software
-
-* Kali Linux actualizado
-* Python 3
-* Git
-* Arduino IDE
-* Arduino conectado por USB
+> Los sketches antiguos `sketch_aug25a/` y `sketch_aug25b/` (Arduino UNO) se conservan como referencia.
 
 ---
 
-# 1. Actualizar Kali Linux
+## 📋 Hardware
 
-Abrir una terminal:
+* ESP32-S3 (p. ej. ESP32-S3-DevKitC-1)
+* Módulo PCA9685 (I2C, dirección 0x40)
+* 5 servomotores (MG90S / SG90 o similares)
+* Fuente externa **5-6 V, mínimo 3 A** para los servos
+* Webcam + PC con Kali Linux (también funciona en Windows / Ubuntu)
+
+### 🔌 Cableado
+
+| ESP32-S3 | PCA9685 |
+|---|---|
+| 3V3 | VCC |
+| GND | GND |
+| GPIO 8 | SDA |
+| GPIO 9 | SCL |
+
+* Fuente externa 5-6 V → bornera **V+ / GND** del PCA9685.
+* **GND común**: el GND de la fuente, del PCA9685 y de la ESP32 deben estar unidos.
+* **Nunca** alimentes los servos desde el pin 5V/3V3 de la ESP32.
+
+| Dedo | Canal PCA9685 |
+|---|---|
+| Pulgar | 0 |
+| Índice | 2 |
+| Medio | 4 |
+| Anular | 6 |
+| Meñique | 8 |
+
+Se pueden cambiar los pines en `PIN_SDA` / `PIN_SCL` y los canales en la tabla `mano[]` del firmware.
+
+---
+
+## 🧠 1. Cargar el firmware en la ESP32-S3
+
+1. Instala el **Arduino IDE 2**.
+2. En *Archivo → Preferencias → URLs adicionales de gestor de placas* añade:
+   ```text
+   https://espressif.github.io/arduino-esp32/package_esp32_index.json
+   ```
+3. *Herramientas → Placa → Gestor de placas* → instala **esp32 de Espressif**.
+4. *Herramientas → Gestionar bibliotecas* → instala **Adafruit PWM Servo Driver Library**.
+5. Abre `firmware/ManoBionicaESP32S3/ManoBionicaESP32S3.ino`.
+6. Selecciona:
+   * Placa: **ESP32S3 Dev Module**
+   * **USB CDC On Boot: Enabled** (si conectas por el USB nativo, el que pone "USB")
+   * Puerto: `/dev/ttyACM0` (o `/dev/ttyUSB0` si usas el conector "UART/COM")
+7. Pulsa **Subir**. Si no entra en modo de carga: mantén **BOOT**, pulsa **RST** y suelta **BOOT**.
+
+Abre el Monitor Serie a **115200** y escribe `HELP`. Deberías ver:
+
+```text
+[WIFI] Punto de acceso 'ManoBionica-S3' (clave 'mano12345'). IP: 192.168.4.1
+[WIFI] Panel web: http://mano.local  |  UDP puerto 4210
+[SISTEMA] Mano Biónica ESP32-S3 lista. Escribe HELP.
+```
+
+### WiFi
+
+Por defecto la ESP32 crea su propia red **`ManoBionica-S3`** (clave `mano12345`).
+Para que se conecte a la WiFi de tu casa, rellena `WIFI_SSID` y `WIFI_PASS` al principio
+del firmware; si no consigue conectar en 8 s vuelve a crear su propia red.
+
+### LED RGB integrado
+
+🟢 recibiendo de Python · 🔵 manual / web · 🟣 demo · 🟠 failsafe · 🔴 parpadeando = PCA9685 no detectado
+
+---
+
+## 🪟 2A. Windows: programa .exe (sin instalar Python)
+
+Hay dos formas de conseguir `ManoBionica.exe`:
+
+**Opción 1 — Descargarlo de GitHub (recomendado).** Cada vez que se suben cambios, GitHub
+compila el `.exe` automáticamente en un Windows y comprueba que arranca:
+
+1. En GitHub, abre la pestaña **Actions** → el último **Compilar** en verde.
+2. Abajo, en **Artifacts**, descarga **ManoBionica-Windows** (un `.zip`).
+3. Descomprímelo y abre `ManoBionica\ManoBionica.exe`.
+
+Si se crea una etiqueta de versión (`git tag v1.0.0` y `git push origin v1.0.0`), el `.zip`
+aparece además en **Releases** con enlace de descarga directo.
+En **Artifacts** también está **Firmware-ESP32S3** con el firmware ya compilado (`.bin`).
+
+**Opción 2 — Crearlo en tu PC.** Con Python instalado (python.org, marcando
+*Add Python to PATH*), haz doble clic en **`crear_exe.bat`**. Tarda unos minutos la primera vez y
+deja el programa en `dist\ManoBionica\ManoBionica.exe`.
+
+Notas:
+
+* Copia siempre la **carpeta completa** `ManoBionica` (el `.exe` necesita la carpeta `_internal`).
+* Pesa unos 600 MB descomprimido (~250 MB en `.zip`) porque lleva dentro Python, Qt, OpenCV y MediaPipe.
+* Si aparece *«Windows protegió su PC»*: **Más información → Ejecutar de todas formas**
+  (sale porque el programa no está firmado digitalmente).
+* La calibración y tus secuencias se guardan junto al `.exe`.
+
+---
+
+## 🐍 2B. Kali Linux / desde el código (Python)
 
 ```bash
 sudo apt update
-sudo apt full-upgrade -y
 ```
-
-Después instalar las herramientas necesarias:
 
 ```bash
-sudo apt install -y git python3 python3-pip python3-venv python3-dev build-essential
+sudo apt install -y git python3 python3-pip python3-venv libgles2 libegl1
 ```
 
-Kali proporciona `python3-venv` para crear entornos virtuales aislados de Python.
-
----
-
-# 2. Descargar HandProyect
-
-Clonar el repositorio:
+(`libgles2` y `libegl1` los necesita MediaPipe ≥ 1.0 en Linux.)
 
 ```bash
 git clone https://github.com/josemanuelcontrerasgalarza-cyber/HandProyect.git
 ```
 
-Entrar al proyecto:
-
 ```bash
 cd HandProyect
 ```
-
-Comprobar los archivos:
-
-```bash
-ls
-```
-
-Deberían aparecer los archivos principales del proyecto.
-
----
-
-# 3. Crear el entorno virtual
-
-Crear un entorno virtual:
 
 ```bash
 python3 -m venv venv
 ```
 
-Activarlo:
-
 ```bash
 source venv/bin/activate
 ```
 
-Cuando esté activado, la terminal debería mostrar algo similar a:
-
-```text
-(venv) user@kali:~/HandProyect$
-```
-
-MediaPipe también recomienda utilizar un entorno virtual para instalar su paquete Python.
-
----
-
-# 4. Actualizar pip
-
-Con el entorno virtual activado:
-
 ```bash
-python -m pip install --upgrade pip
+pip install --upgrade pip
 ```
-
----
-
-# 5. Instalar las dependencias
-
-El proyecto incluye un archivo:
-
-```text
-requirements.txt
-```
-
-Instalar todas las dependencias:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Entre las dependencias utilizadas por el proyecto se encuentran herramientas para:
+La primera vez que se ejecuta, el programa descarga automáticamente el modelo de MediaPipe
+(`models/hand_landmarker.task`, ~8 MB).
 
-* Procesamiento de imágenes.
-* Visión artificial.
-* Detección de manos.
-* Comunicación Serial.
-* Cálculos numéricos.
-
----
-
-# 6. Comprobar MediaPipe
-
-Ejecutar:
-
-```bash
-python -c "import mediapipe as mp; print('MediaPipe OK')"
-```
-
-Si aparece:
-
-```text
-MediaPipe OK
-```
-
-la instalación fue correcta.
-
-MediaPipe proporciona paquetes Python precompilados para Linux y permite instalarlo mediante `pip` dentro de un entorno virtual.
-
----
-
-# 7. Comprobar OpenCV
-
-Ejecutar:
-
-```bash
-python -c "import cv2; print(cv2.__version__)"
-```
-
-Debería aparecer la versión instalada de OpenCV.
-
-Ejemplo:
-
-```text
-4.x.x
-```
-
----
-
-# 8. Comprobar NumPy
-
-```bash
-python -c "import numpy; print(numpy.__version__)"
-```
-
----
-
-# 9. Comprobar comunicación Serial
-
-```bash
-python -c "import serial; print('PySerial OK')"
-```
-
-Si aparece:
-
-```text
-PySerial OK
-```
-
-la comunicación Serial está disponible.
-
----
-
-# 🔌 10. Conectar Arduino UNO
-
-Conectar el Arduino UNO mediante USB.
-
-Después ejecutar:
-
-```bash
-ls /dev/ttyACM*
-```
-
-También se puede comprobar:
-
-```bash
-ls /dev/ttyUSB*
-```
-
-Dependiendo del sistema, Arduino puede aparecer como:
-
-```text
-/dev/ttyACM0
-```
-
-o:
-
-```text
-/dev/ttyUSB0
-```
-
----
-
-# 🔐 11. Permisos del puerto Serial
-
-Si el programa no puede acceder al Arduino, agregar el usuario al grupo `dialout`:
+### Permisos del puerto serie
 
 ```bash
 sudo usermod -aG dialout $USER
 ```
 
-Después cerrar sesión y volver a entrar.
-
-También puede reiniciarse el equipo:
-
-```bash
-sudo reboot
-```
-
-Después comprobar:
-
-```bash
-groups
-```
-
-Debe aparecer:
-
-```text
-dialout
-```
+Cierra la sesión y vuelve a entrar para que se aplique.
 
 ---
 
-# ⚙️ 12. Configurar el puerto Arduino
+## ▶️ 3. Ejecutar
 
-El proyecto necesita conocer el puerto Serial del Arduino.
-
-Primero identificarlo:
-
-```bash
-ls /dev/ttyACM*
-```
-
-Ejemplo:
-
-```text
-/dev/ttyACM0
-```
-
-Abrir el archivo principal:
-
-```bash
-nano hand_control.py
-```
-
-Buscar la configuración del puerto Serial.
-
-Si actualmente existe algo como:
-
-```python
-SERIAL_PORT = "COM11"
-```
-
-cambiarlo por:
-
-```python
-SERIAL_PORT = "/dev/ttyACM0"
-```
-
-Guardar:
-
-```text
-CTRL + O
-ENTER
-```
-
-Salir:
-
-```text
-CTRL + X
-```
-
-> Si Kali asigna otro puerto, utilizar el puerto que aparezca en `/dev/`.
-
----
-
-# 🧠 13. Configurar Arduino
-
-Antes de ejecutar Python, el Arduino debe tener cargado el programa correspondiente.
-
-Abrir Arduino IDE.
-
-Seleccionar:
-
-```text
-Tools → Board → Arduino UNO
-```
-
-Después seleccionar el puerto correspondiente.
-
-Cargar el sketch del proyecto.
-
-Una vez cargado correctamente, cerrar el **Serial Monitor** de Arduino IDE antes de ejecutar Python.
-
-Esto es importante porque el Serial Monitor puede ocupar el puerto.
-
----
-
-# 🔧 14. PCA9685 y servomotores
-
-El PCA9685 se utiliza para controlar los servomotores.
-
-La alimentación de los servos debe realizarse mediante una fuente externa apropiada.
-
-### ⚠️ IMPORTANTE
-
-**NO alimentar los 5 servomotores directamente desde el Arduino UNO.**
-
-El Arduino y la fuente externa deben compartir:
-
-```text
-GND Arduino
-     │
-     └──────── GND fuente de servos
-```
-
-La alimentación de los servos debe conectarse según las especificaciones de los servomotores utilizados.
-
----
-
-# 📷 15. Comprobar la cámara
-
-Antes de ejecutar el proyecto, comprobar que Kali detecta la webcam:
-
-```bash
-ls /dev/video*
-```
-
-Normalmente aparecerá:
-
-```text
-/dev/video0
-```
-
-También se puede comprobar mediante:
-
-```bash
-v4l2-ctl --list-devices
-```
-
-Si el comando no existe:
-
-```bash
-sudo apt install v4l-utils
-```
-
----
-
-# ▶️ 16. Ejecutar HandProyect
-
-Activar el entorno virtual:
-
-```bash
-source venv/bin/activate
-```
-
-Ejecutar:
+Por USB (el puerto de la ESP32 se detecta solo):
 
 ```bash
 python hand_control.py
 ```
 
-El sistema debería:
+Indicando el puerto a mano:
+
+```bash
+python hand_control.py --puerto /dev/ttyACM0
+```
+
+Sin cable, conectado a la red `ManoBionica-S3`:
+
+```bash
+python hand_control.py --wifi 192.168.4.1
+```
+
+Solo la cámara, sin hardware:
+
+```bash
+python hand_control.py --sin-hardware
+```
+
+Otras opciones: `--camara 1` (otra webcam), `--ancho 640 --alto 480` (más FPS en PCs lentos),
+`--binario` (empezar en modo abierto/cerrado como la versión antigua).
+
+### ⌨️ Controles
+
+| Tecla | Acción |
+|---|---|
+| `A` | Calibrar: pon la mano **totalmente abierta** y pulsa (muestrea 1 s) |
+| `C` | Calibrar: cierra el **puño** y pulsa |
+| `R` | Volver a la calibración por defecto |
+| `B` | Cambiar entre modo **proporcional** y **binario** |
+| `D` / `M` | Ejecutar / parar la **demo** guardada en la ESP32 |
+| `ESC` / `Q` | Salir (la mano se abre antes de desconectar) |
+
+La calibración de la cámara se guarda en `calibracion.json`.
+
+---
+
+## 🖥️ 4. Aplicación de escritorio
+
+```bash
+python mano_app.py
+```
+
+Arriba eliges la conexión (**USB**, **WiFi** o **Simulación**) y pulsas **Conectar**. El
+desplegable **Fuente** indica quién mueve la mano en cada momento (cámara, sliders, secuencia o
+la demo de la ESP32): solo hay una a la vez, así nunca se pelean por los servos. El botón rojo
+**PARADA** (o la tecla `Esc`) deja de enviar y abre la mano.
+
+| Pestaña | Para qué sirve |
+|---|---|
+| 📷 **Cámara** | Vídeo con el esqueleto de tu mano, gesto reconocido, barras por dedo y esquema de la mano robótica. «Controlar la mano con la cámara» hace que la mano te copie. Modo binario, suavizado y calibración rápida. |
+| 🎚 **Manual** | Un slider por dedo, 11 gestos, demo de la ESP32, relajar servos y velocidad. |
+| 🎞 **Secuencias** | Editor de movimientos: añade poses (de la cámara, de los sliders o gestos), con tiempo de transición, pausa y curva. Reproduce con pausa, velocidad y bucle. Se guardan en `secuencias/` y trae 5 de ejemplo (Saludo, Contar 1-5, Ola, Piano, Agarre suave). |
+| 🎯 **Calibración** | Asistente guiado de la cámara (mano abierta → puño, con cuenta atrás) y ajuste de los pulsos de cada servo con prueba en vivo; se leen y se guardan en la ESP32. |
+| 📈 **Gráficas** | Pose enviada y lectura de la cámara en tiempo real, estadísticas y exportación a CSV. |
+| ⌨ **Consola** | Monitor serie integrado con historial (↑ / ↓), atajos y registro guardable. |
+
+Atajos: `Esc` parada · `F5` cámara · `F6` controlar con la cámara · `Ctrl+K` conectar ·
+`Ctrl+1…6` pestañas · `F1` ayuda.
+
+Para arrancar ya conectado:
+
+```bash
+python mano_app.py --usb
+```
+
+```bash
+python mano_app.py --wifi 192.168.4.1
+```
+
+### Probar sin la mano (simulador)
+
+`tools/simulador_esp32.py` imita a la ESP32 (mismo protocolo, calibración, failsafe…) por UDP.
+En una terminal:
+
+```bash
+python tools/simulador_esp32.py
+```
+
+En otra:
+
+```bash
+python mano_app.py --wifi 127.0.0.1
+```
+
+---
+
+## 🎛️ 5. Calibrar los servos (una sola vez)
+
+Desde la pestaña **🎯 Calibración** de la aplicación de escritorio, o desde el **panel web**
+(`http://mano.local` o `http://192.168.4.1`) → sección *Calibración*:
+
+1. Escribe un pulso en **Abierto**, pulsa **Probar** y ajusta hasta que el dedo quede totalmente abierto sin forzar el hilo.
+2. Haz lo mismo con **Cerrado**.
+3. Pulsa **Aplicar** en esa fila y al final **Guardar en la ESP32**.
+
+O por el Monitor Serie:
 
 ```text
-📷 Detectar la cámara
-        ↓
-🖐️ Detectar la mano
-        ↓
-🧠 Analizar los dedos
-        ↓
-📊 Calcular estados de los dedos
-        ↓
-🔌 Enviar datos por Serial
-        ↓
-🤖 Arduino
-        ↓
-⚙️ PCA9685
-        ↓
-🦾 Mover los servomotores
+PULSO 1 140        mueve el índice a 140 ticks para probar
+CAL 1 135 510      índice: abierto=135, cerrado=510
+INV 0              invierte el sentido del pulgar
+SAVE               guarda en la flash
 ```
 
+### Todos los comandos
+
+| Comando | Descripción |
+|---|---|
+| `P:a,b,c,d,e` | Posición de cada dedo 0-100 (% abierto) — lo que envía Python |
+| `a,b,c,d,e` | Formato antiguo binario (1 = abierto, 0 = cerrado) |
+| `OPEN` / `CLOSE` | Abrir / cerrar toda la mano |
+| `GESTO <nombre>` / `GESTOS` | Hacer un gesto / listar gestos (ABIERTA, PUNO, PAZ, ROCK, OK, APUNTAR, PULGAR, PISTOLA, TELEFONO, PINZA, RELAJADA) |
+| `SET <dedo> <0-100>` | Mover un dedo (0 = pulgar … 4 = meñique) |
+| `SPEED <1-100>` | Velocidad de los servos |
+| `DEMO` / `STOP` | Secuencia de demostración / parar |
+| `RELAX` | Quitar la fuerza a los servos |
+| `PULSO`, `CAL`, `INV`, `SAVE`, `LOAD`, `DEFAULTS` | Calibración |
+| `STATUS`, `PING`, `HELP` | Información |
+
+Los mismos comandos funcionan por USB, por UDP (puerto 4210) y desde la web.
+
 ---
 
-# ⌨️ Controles
+## 🧪 Tests
 
-| Tecla | Función                                |
-| ----- | -------------------------------------- |
-| `M`   | Cambiar entre modo manual y automático |
-| `ESC` | Salir del programa                     |
+```bash
+pip install -r requirements-dev.txt
+```
+
+```bash
+python -m pytest
+```
+
+Comprueban la interpolación de secuencias, la calibración, el cálculo de flexión, la
+comunicación UDP, el simulador y que el formato de `STATUS` del firmware coincida con lo que
+entiende la aplicación.
 
 ---
 
-# 🛠️ Solución de problemas
-
-## ❌ `externally-managed-environment`
-
-Si aparece:
+## 🗂️ Estructura
 
 ```text
-error: externally-managed-environment
-```
-
-no instalar los paquetes globalmente.
-
-Crear y activar nuevamente el entorno:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-Después:
-
-```bash
-pip install -r requirements.txt
-```
-
-Kali recomienda utilizar entornos virtuales para paquetes Python que no estén instalados mediante APT.
-
----
-
-## ❌ `No module named cv2`
-
-Ejecutar:
-
-```bash
-pip install opencv-python
-```
-
-Después comprobar:
-
-```bash
-python -c "import cv2; print('OpenCV OK')"
+firmware/ManoBionicaESP32S3/   Firmware de la ESP32-S3 (+ panel web)
+mano/                          Núcleo en Python: enlace USB/WiFi, visión, secuencias
+mano/gui/                      Aplicación de escritorio (PySide6)
+mano_app.py                    Arranca la aplicación de escritorio
+hand_control.py                Versión ligera con ventana OpenCV
+tools/simulador_esp32.py       Simulador de la ESP32 para probar sin hardware
+tests/                         Tests automáticos
+crear_exe.bat, mano_app.spec   Crear el .exe de Windows (PyInstaller)
+.github/workflows/compilar.yml Compila el .exe y el firmware en GitHub automáticamente
+sketch_aug25a/, sketch_aug25b/ Versión antigua para Arduino UNO
 ```
 
 ---
 
-## ❌ `No module named mediapipe`
+## 🛠️ Solución de problemas
 
-Ejecutar:
+**`OSError: libGLESv2.so.2` al iniciar la cámara (Linux)**
+Falta una librería que usa MediaPipe: `sudo apt install -y libgles2 libegl1`.
 
-```bash
-pip install mediapipe
-```
+**La aplicación no abre en Kali (`libEGL.so.1` / `xcb`)**
+Instala las librerías de Qt: `sudo apt install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0`.
 
-Comprobar:
 
-```bash
-python -c "import mediapipe; print('MediaPipe OK')"
-```
+**`AttributeError: module 'mediapipe' has no attribute 'solutions'`**
+Era el error de la versión anterior con Python 3.13. Usa el nuevo `hand_control.py` de este repositorio.
 
----
+**`externally-managed-environment` al instalar**
+Activa el entorno virtual (`source venv/bin/activate`) antes de `pip install`.
 
-## ❌ `No module named serial`
+**La ESP32 no aparece como puerto**
+Comprueba con `ls /dev/ttyACM* /dev/ttyUSB*`. Usa un cable USB de datos (no solo de carga) y
+activa *USB CDC On Boot* si usas el conector USB nativo.
 
-Instalar:
+**`[ERROR] PCA9685 no detectado`**
+Revisa SDA → GPIO 8, SCL → GPIO 9, VCC → 3V3 y GND.
 
-```bash
-pip install pyserial
-```
+**Los servos tiemblan o la ESP32 se reinicia**
+La fuente de los servos es insuficiente o falta el GND común. Usa 5-6 V y al menos 3 A.
 
-Comprobar:
+**Un dedo se mueve al revés**
+`INV <dedo>` y `SAVE`, o intercambia los valores en el panel web.
 
-```bash
-python -c "import serial; print('PySerial OK')"
-```
-
----
-
-## ❌ Arduino no aparece
-
-Comprobar:
-
-```bash
-ls /dev/ttyACM*
-```
-
-y:
-
-```bash
-ls /dev/ttyUSB*
-```
-
-Si no aparece ninguno:
-
-1. Desconectar Arduino.
-2. Volver a conectarlo.
-3. Ejecutar:
-
-```bash
-dmesg | tail -30
-```
-
-Buscar una línea relacionada con:
-
-```text
-ttyACM
-```
-
-o:
-
-```text
-ttyUSB
-```
-
----
-
-## ❌ `Permission denied` con Arduino
-
-Ejecutar:
-
-```bash
-sudo usermod -aG dialout $USER
-```
-
-Cerrar sesión y volver a entrar.
-
----
-
-## ❌ La cámara no funciona
-
-Comprobar:
-
-```bash
-ls /dev/video*
-```
-
-Si no aparece ningún dispositivo:
-
-* Comprobar la conexión de la webcam.
-* Probar otra webcam.
-* Comprobar los permisos del dispositivo.
-* Verificar que otra aplicación no esté utilizando la cámara.
-
----
-
-## ❌ Los servos no se mueven
-
-Comprobar:
-
-* Alimentación externa.
-* GND común.
-* Cableado del PCA9685.
-* Dirección I2C del PCA9685.
-* Conexiones de los servos.
-* Puerto Serial.
-* Sketch cargado en Arduino.
-
----
-
-# 🧪 Diagnóstico rápido
-
-Ejecutar estos comandos:
-
-```bash
-python --version
-```
-
-```bash
-pip --version
-```
-
-```bash
-python -c "import cv2; print('OpenCV OK')"
-```
-
-```bash
-python -c "import mediapipe; print('MediaPipe OK')"
-```
-
-```bash
-python -c "import serial; print('PySerial OK')"
-```
-
-```bash
-ls /dev/ttyACM*
-```
-
-```bash
-ls /dev/video*
-```
-
-Si todos funcionan, ejecutar:
-
-```bash
-python hand_control.py
-```
-
----
-
-# 🔄 Instalación rápida
-
-Para una instalación desde cero:
-
-```bash
-sudo apt update
-
-sudo apt install -y git python3 python3-pip python3-venv python3-dev build-essential
-
-git clone https://github.com/josemanuelcontrerasgalarza-cyber/HandProyect.git
-
-cd HandProyect
-
-python3 -m venv venv
-
-source venv/bin/activate
-
-python -m pip install --upgrade pip
-
-pip install -r requirements.txt
-
-python hand_control.py
-```
-
----
-
-# 🔁 Ejecución después de la instalación
-
-Cada vez que se quiera ejecutar el proyecto:
-
-```bash
-cd HandProyect
-```
-
-```bash
-source venv/bin/activate
-```
-
-```bash
-python hand_control.py
-```
-
----
-
-# 🛑 Detener el proyecto
-
-Presionar:
-
-```text
-ESC
-```
-
-El programa cerrará la cámara y finalizará la comunicación Serial.
-
-Para salir del entorno virtual:
-
-```bash
-deactivate
-```
-
----
-
-# 📌 Notas
-
-HandProyect requiere:
-
-* Una cámara funcional.
-* Un Arduino UNO correctamente configurado.
-* Una conexión Serial disponible.
-* Una instalación funcional de Python.
-* Los componentes electrónicos correctamente conectados.
-
-La configuración del puerto Serial puede variar entre equipos Linux.
-
-**No asumir que `/dev/ttyACM0` será siempre el puerto utilizado.**
-
----
-
-# 👨‍💻 Autor
-
-**José Manuel Contreras Galarza**
-
-HandProyect — Robótica + Visión Artificial + Arduino
-
----
-
-## 📄 Licencia
-
-Consultar el repositorio para conocer las condiciones de uso y distribución del proyecto.
+**Los dedos no llegan a cerrar / abrir del todo en la cámara**
+Calibra con las teclas `A` (mano abierta) y `C` (puño).

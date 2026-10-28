@@ -1,285 +1,210 @@
-import cv2
-import mediapipe as mp
-import numpy as np
-import serial
+"""
+HandProyect - Control de mano biónica por visión artificial (versión ligera, sin ventana Qt).
+
+Lee tu mano con la webcam (MediaPipe HandLandmarker), calcula cuánto está
+abierto cada dedo (0-100 %) y lo envía a la ESP32-S3 por USB o por WiFi.
+Para la aplicación de escritorio completa usa:  python mano_app.py
+
+Uso:
+    python hand_control.py                      # USB, puerto autodetectado
+    python hand_control.py --puerto /dev/ttyACM0
+    python hand_control.py --wifi 192.168.4.1   # sin cable, por UDP
+    python hand_control.py --sin-hardware       # solo visión, sin enviar nada
+
+Teclas: [A] calibrar mano ABIERTA  [C] calibrar PUÑO  [R] borrar calibración
+        [B] modo binario/proporcional  [D] demo en la ESP32  [ESC/Q] salir
+"""
+import argparse
+import sys
 import time
-import math
+
+import cv2
+
+from mano.enlace import EnlaceNulo, EnlaceSerial, EnlaceWiFi, formatear_trama
+from mano.vision import (DEDOS_NOMBRES, Calibrador, DetectorMano, FiltroDedos, a_porcentaje,
+                         calibracion_defecto, cargar_calibracion, clasificar_gesto,
+                         dibujar_mano, guardar_calibracion)
 
 # ==========================================
-# 1. CONFIGURACIÓN DEL SISTEMA Y SERIAL
+# 1. CONFIGURACIÓN
 # ==========================================
-SERIAL_PORT = 'COM9'
-BAUD_RATE = 115200
-ENABLE_SERIAL = True
+INTERVALO_ENVIO = 1 / 30          # 30 Hz hacia la ESP32
+DURACION_CALIBRACION = 1.0        # segundos de muestreo al calibrar
 
-try:
-    if ENABLE_SERIAL:
-        arduino = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
-        time.sleep(1.5)
-        print(f"[SISTEMA] Conexión establecida con éxito en {SERIAL_PORT}")
-    else:
-        arduino = None
-except Exception as err:
-    print(f"[ADVERTENCIA] No se pudo abrir {SERIAL_PORT}: {err}")
-    print("[SISTEMA] Ejecutando en modo simulación visual sin hardware.")
-    arduino = None
 
 # ==========================================
-# 2. INICIALIZACIÓN DE MEDIAPIPE Y CÁMARA
+# 2. INTERFAZ HUD
 # ==========================================
-mp_hands = mp.solutions.hands
-mp_draw = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
-
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    model_complexity=1,
-    min_detection_confidence=0.75,
-    min_tracking_confidence=0.75
-)
-
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-# Índices de referencia anatómica MediaPipe
-TIPS = [4, 8, 12, 16, 20]     # Puntas: Pulgar, Índice, Medio, Anular, Meñique
-PIPS = [3, 6, 10, 14, 18]     # Articulaciones intermedias
-MCPS = [2, 5, 9, 13, 17]      # Nudillos base
-DEDOS_NOMBRES = ["PULGAR", "INDICE", "MEDIO", "ANULAR", "MENIQUE"]
-
-# ==========================================
-# 3. VARIABLES DE ESTADO Y TELEMETRÍA
-# ==========================================
-estado_dedos = [1, 1, 1, 1, 1]          # 1: Abierto, 0: Cerrado
-porcentajes_flexion = [100, 100, 100, 100, 100]
-ultimo_envio_serial = 0
-INTERVALO_ENVIO = 0.05                 # 20 Hz de refresco serial
-
-modo_auto = False
-tiempo_inicio_auto = time.time()
-nombre_gesto_actual = "CALIBRANDO..."
-
-prev_time = 0
-fps = 0
-
-# ==========================================
-# 4. FUNCIONES AUXILIARES DE CÁLCULO
-# ==========================================
-def calcular_distancia_3d(p1, p2):
-    """Calcula la distancia euclidiana en espacio normalizado 3D."""
-    return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)
-
-def clasificar_gesto(dedos, lm):
-    """Reconoce posturas complejas de la mano mediante reglas lógicas."""
-    if dedos == [0, 0, 0, 0, 0]:
-        return "PUNO CERRADO"
-    if dedos == [1, 1, 1, 1, 1]:
-        return "MANO COMPLETA"
-    if dedos == [0, 1, 1, 0, 0]:
-        return "PAZ / VICTORIA"
-    if dedos == [1, 1, 0, 0, 1]:
-        return "ROCK / SPIDERMAN"
-    if dedos == [1, 1, 0, 0, 0]:
-        return "PISTOLA"
-    if dedos == [0, 1, 1, 1, 1]:
-        d_ok = calcular_distancia_3d(lm[4], lm[8])
-        if d_ok < 0.07:
-            return "GESTO OK"
-    if dedos == [1, 1, 1, 1, 1]:
-        dist_medio_anular = calcular_distancia_3d(lm[12], lm[16])
-        if dist_medio_anular > 0.08:
-            return "SALUDO VULCANO (SPOCK)"
-    return "MOVIMIENTO LIBRE"
-
-def dibujar_interfaz_hud(img, fps_val, dedos, porcentajes, gesto, modo):
-    """Renderiza el HUD futurista y los medidores de telemetría."""
+def dibujar_interfaz_hud(img, fps_val, dedos, porcentajes, gesto, estado, enlace, aviso):
     h, w, _ = img.shape
-
-    # Panel superior de telemetría
     overlay = img.copy()
-    cv2.rectangle(overlay, (15, 15), (420, 240), (15, 15, 25), -1)
-    cv2.rectangle(overlay, (w - 380, 15), (w - 15, 120), (15, 15, 25), -1)
+    cv2.rectangle(overlay, (15, 15), (440, 250), (15, 15, 25), -1)
+    cv2.rectangle(overlay, (w - 400, 15), (w - 15, 130), (15, 15, 25), -1)
     cv2.addWeighted(overlay, 0.75, img, 0.25, 0, img)
+    cv2.rectangle(img, (15, 15), (440, 250), (0, 255, 200), 1)
+    cv2.rectangle(img, (w - 400, 15), (w - 15, 130), (0, 200, 255), 1)
 
-    # Bordes Sci-Fi
-    cv2.rectangle(img, (15, 15), (420, 240), (0, 255, 200), 1)
-    cv2.rectangle(img, (w - 380, 15), (w - 15, 120), (0, 200, 255), 1)
-
-    # Texto de cabecera
     cv2.putText(img, "SISTEMA DE TELEMETRIA BIONICA", (30, 45),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 200), 2)
-    cv2.putText(img, f"ESTADO: {'MODO AUTONOMO' if modo else 'CONTROL MANUAL'}", (30, 70),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255) if modo else (0, 255, 100), 1)
+    cv2.putText(img, f"ESTADO: {estado}", (30, 70),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-    # Barras de flexión por dedo
     for idx, (nom, val, pct) in enumerate(zip(DEDOS_NOMBRES, dedos, porcentajes)):
-        y_pos = 100 + (idx * 26)
+        y_pos = 100 + idx * 28
         color_barra = (0, 255, 120) if val == 1 else (50, 50, 240)
-
-        # Nombre del dedo y valor binario
-        cv2.putText(img, f"{nom[:3]}:", (30, y_pos),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1)
-
-        # Barra de progreso
-        ancho_max = 160
-        ancho_actual = int((pct / 100.0) * ancho_max)
+        cv2.putText(img, f"{nom[:3]}:", (30, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1)
+        ancho_max = 170
+        ancho_actual = int(pct / 100.0 * ancho_max)
         cv2.rectangle(img, (80, y_pos - 12), (80 + ancho_max, y_pos + 2), (50, 50, 50), -1)
         cv2.rectangle(img, (80, y_pos - 12), (80 + ancho_actual, y_pos + 2), color_barra, -1)
         cv2.rectangle(img, (80, y_pos - 12), (80 + ancho_max, y_pos + 2), (180, 180, 180), 1)
-
-        # Porcentaje numérico y estado
-        cv2.putText(img, f"{pct}% [{'ABR' if val==1 else 'CER'}]", (255, y_pos),
+        cv2.putText(img, f"{int(pct)}% [{'ABR' if val == 1 else 'CER'}]", (265, y_pos),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, color_barra, 1)
 
-    # Panel lateral derecho (FPS y Gesto)
-    cv2.putText(img, f"FPS: {int(fps_val)}", (w - 360, 48),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-    cv2.putText(img, "GESTO ACTIVO:", (w - 360, 75),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
-    cv2.putText(img, gesto, (w - 360, 102),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+    cv2.putText(img, enlace, (30, 238), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
 
-    # Leyenda de comandos
-    cv2.putText(img, "[M] Alternar Modo Auto/Manual | [ESC] Salir", (20, h - 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+    cv2.putText(img, f"FPS: {int(fps_val)}", (w - 380, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+    cv2.putText(img, "GESTO ACTIVO:", (w - 380, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+    cv2.putText(img, gesto, (w - 380, 108), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+
+    if aviso:
+        (tw, _), _ = cv2.getTextSize(aviso, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
+        cv2.putText(img, aviso, ((w - tw) // 2, h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 220, 255), 2)
+
+    cv2.putText(img, "[A] Calib. abierta  [C] Calib. puno  [R] Reset calib.  [B] Binario/Proporcional  "
+                "[D] Demo  [ESC] Salir", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+
+
+def parsear_argumentos():
+    p = argparse.ArgumentParser(description="Control de mano biónica con ESP32-S3")
+    p.add_argument("--puerto", help="Puerto serie (ej. /dev/ttyACM0 o COM9). Por defecto: autodetectar")
+    p.add_argument("--wifi", metavar="IP", help="Enviar por WiFi/UDP a esta IP (ej. 192.168.4.1)")
+    p.add_argument("--sin-hardware", action="store_true", help="No enviar nada (solo visión)")
+    p.add_argument("--camara", type=int, default=0, help="Índice de la webcam (por defecto 0)")
+    p.add_argument("--ancho", type=int, default=1280)
+    p.add_argument("--alto", type=int, default=720)
+    p.add_argument("--binario", action="store_true", help="Empezar en modo binario (abierto/cerrado)")
+    return p.parse_args()
+
 
 # ==========================================
-# 5. LOOP PRINCIPAL DE EJECUCIÓN
+# 3. LOOP PRINCIPAL
 # ==========================================
-while cap.isOpened():
-    success, frame = cap.read()
-    if not success:
-        print("[ERROR] No se detecta señal de la cámara.")
-        break
+def main():
+    args = parsear_argumentos()
 
-    # Espejo horizontal y conversión de color
-    frame = cv2.flip(frame, 1)
-    h_frame, w_frame, _ = frame.shape
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(rgb_frame)
-
-    # Cálculo de FPS
-    current_time = time.time()
-    fps = 1.0 / (current_time - prev_time) if (current_time - prev_time) > 0 else 30
-    prev_time = current_time
-
-    if not modo_auto:
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                # Renderizado personalizado de conexiones
-                mp_draw.draw_landmarks(
-                    frame,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing_styles.get_default_hand_landmarks_style(),
-                    mp_drawing_styles.get_default_hand_connections_style()
-                )
-
-                lm = hand_landmarks.landmark
-                muneca = lm[0]
-
-                # 1. ANÁLISIS DEL PULGAR (Vectorial respecto a base de Meñique y Carpo)
-                dist_pulgar_tip_meñique = calcular_distancia_3d(lm[4], lm[17])
-                dist_pulgar_mcp_meñique = calcular_distancia_3d(lm[2], lm[17])
-                ratio_pulgar = dist_pulgar_tip_meñique / (dist_pulgar_mcp_meñique + 1e-5)
-
-                if ratio_pulgar > 1.25:
-                    estado_dedos[0] = 1
-                    porcentajes_flexion[0] = min(100, int((ratio_pulgar - 1.0) * 150))
-                else:
-                    estado_dedos[0] = 0
-                    porcentajes_flexion[0] = max(0, int((ratio_pulgar - 0.7) * 120))
-
-                # 2. ANÁLISIS DE LOS 4 DEDOS (Distancia relativa a la Muñeca)
-                for i in range(1, 5):
-                    d_tip = calcular_distancia_3d(lm[TIPS[i]], muneca)
-                    d_pip = calcular_distancia_3d(lm[PIPS[i]], muneca)
-                    d_mcp = calcular_distancia_3d(lm[MCPS[i]], muneca)
-
-                    # Normalización porcentual
-                    recorrido_total = d_tip - d_mcp
-                    porcentaje = int(np.clip((d_tip / (d_pip + 1e-5) - 0.9) * 200, 0, 100))
-                    porcentajes_flexion[i] = porcentaje
-
-                    if d_tip > d_pip and d_tip > d_mcp * 1.15:
-                        estado_dedos[i] = 1
-                    else:
-                        estado_dedos[i] = 0
-
-                nombre_gesto_actual = clasificar_gesto(estado_dedos, lm)
-
-                # Efecto visual: Resaltar la punta de los dedos activos
-                for i, tip_idx in enumerate(TIPS):
-                    cx, cy = int(lm[tip_idx].x * w_frame), int(lm[tip_idx].y * h_frame)
-                    col = (0, 255, 0) if estado_dedos[i] == 1 else (0, 0, 255)
-                    cv2.circle(frame, (cx, cy), 8, col, cv2.FILLED)
-                    cv2.circle(frame, (cx, cy), 14, col, 2)
-        else:
-            nombre_gesto_actual = "MANO NO DETECTADA"
+    if args.sin_hardware:
+        enlace = EnlaceNulo()
+    elif args.wifi:
+        enlace = EnlaceWiFi(args.wifi)
     else:
-        # SECUENCIA AUTOMÁTICA DE DEMOSTRACIÓN (SWEEP)
-        t_auto = time.time() - tiempo_inicio_auto
-        fase = int(t_auto * 1.5) % 6
-
-        if fase == 0:
-            estado_dedos = [1, 1, 1, 1, 1]
-            nombre_gesto_actual = "DEMO: APERTURA TOTAL"
-        elif fase == 1:
-            estado_dedos = [0, 0, 0, 0, 0]
-            nombre_gesto_actual = "DEMO: CIERRE TOTAL"
-        elif fase == 2:
-            estado_dedos = [0, 1, 1, 0, 0]
-            nombre_gesto_actual = "DEMO: SIGNO DE PAZ"
-        elif fase == 3:
-            estado_dedos = [1, 1, 0, 0, 1]
-            nombre_gesto_actual = "DEMO: ROCK N ROLL"
-        elif fase == 4:
-            estado_dedos = [1, 0, 0, 0, 0]
-            nombre_gesto_actual = "DEMO: SOLO PULGAR"
+        enlace = EnlaceSerial(args.puerto)
+        if enlace.conectado:
+            print(f"[SISTEMA] Conectado a la ESP32 en {enlace.puerto_actual}")
         else:
-            estado_dedos = [0, 1, 0, 0, 0]
-            nombre_gesto_actual = "DEMO: SOLO INDICE"
+            print("[SISTEMA] Sin ESP32 por USB: se reintentará cada 2 s (o usa --wifi / --sin-hardware).")
 
-        porcentajes_flexion = [val * 100 for val in estado_dedos]
+    try:
+        detector = DetectorMano()
+    except RuntimeError as err:
+        sys.exit(f"[ERROR] {err}")
+    cap = cv2.VideoCapture(args.camara)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.ancho)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.alto)
+    if not cap.isOpened():
+        sys.exit(f"[ERROR] No se puede abrir la cámara {args.camara}.")
 
-    # ==========================================
-    # 6. PROTOCOLO DE TRANSMISIÓN SERIAL
-    # ==========================================
-    tiempo_actual = time.time()
-    if (tiempo_actual - ultimo_envio_serial) >= INTERVALO_ENVIO:
-        trama_datos = f"{estado_dedos[0]},{estado_dedos[1]},{estado_dedos[2]},{estado_dedos[3]},{estado_dedos[4]}\n"
-        if arduino and arduino.is_open:
-            try:
-                arduino.write(trama_datos.encode('utf-8'))
-            except Exception as e:
-                print(f"[ERROR COM] Error enviando paquete: {e}")
-        ultimo_envio_serial = tiempo_actual
+    calib = cargar_calibracion()
+    filtro = FiltroDedos()
+    calibrador = Calibrador(DURACION_CALIBRACION)
+    modo_binario = args.binario
+    modo_demo = False
+    nombre_gesto = "CALIBRANDO..."
+    aviso, fin_aviso = "", 0
+    ultimo_envio = 0
+    prev_time = time.time()
+    fps = 0.0
 
-    # Renderizar todos los elementos del HUD
-    dibujar_interfaz_hud(frame, fps, estado_dedos, porcentajes_flexion, nombre_gesto_actual, modo_auto)
+    def mostrar_aviso(texto, segundos=2.0):
+        nonlocal aviso, fin_aviso
+        aviso, fin_aviso = texto, time.time() + segundos
+        print(f"[SISTEMA] {texto}")
 
-    # Mostrar la ventana principal
-    cv2.imshow("Control Bionico Avanzado - MediaPipe HUD", frame)
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            print("[ERROR] No se detecta señal de la cámara.")
+            break
 
-    # Control de teclado
-    key = cv2.waitKey(1) & 0xFF
-    if key == 27:  # ESC para salir
-        break
-    elif key in (ord('m'), ord('M')):
-        modo_auto = not modo_auto
-        tiempo_inicio_auto = time.time()
-        print(f"[MODO] Cambiado a: {'AUTONOMO' if modo_auto else 'MANUAL'}")
+        frame = cv2.flip(frame, 1)
+        resultado = detector.procesar(frame)
 
-# ==========================================
-# 7. CIERRE LIMPIO DE RECURSOS
-# ==========================================
-cap.release()
-cv2.destroyAllWindows()
-if arduino and arduino.is_open:
-    # Dejar la mano abierta antes de desconectar
-    arduino.write(b"1,1,1,1,1\n")
+        ahora = time.time()
+        fps = 0.9 * fps + 0.1 * (1.0 / max(ahora - prev_time, 1e-3))
+        prev_time = ahora
+
+        if modo_demo:
+            nombre_gesto = "DEMO EN LA ESP32"
+        elif resultado.detectada:
+            tipo = calibrador.agregar(resultado.crudas, calib)
+            if tipo:
+                guardar_calibracion(calib)
+                mostrar_aviso(f"CALIBRACION '{tipo.upper()}' GUARDADA")
+            filtro.actualizar(a_porcentaje(resultado.crudas, calib))
+            nombre_gesto = clasificar_gesto(filtro.estados, resultado.landmarks_mundo)
+            dibujar_mano(frame, resultado.landmarks_imagen, filtro.estados)
+        else:
+            nombre_gesto = "MANO NO DETECTADA"
+
+        # Envío a la ESP32. Si no se ve la mano no se envía: la ESP32 mantiene la
+        # última posición y abre la mano sola tras 1.5 s (failsafe).
+        if not modo_demo and resultado.detectada and ahora - ultimo_envio >= INTERVALO_ENVIO:
+            valores = [e * 100 for e in filtro.estados] if modo_binario else filtro.porcentajes
+            enlace.enviar(formatear_trama(valores))
+            ultimo_envio = ahora
+        for linea_rx in enlace.leer():
+            print(f"[ESP32] {linea_rx}")
+
+        if calibrador.activo:
+            estado_calib = "ABIERTA" if calibrador.tipo == "abierto" else "CERRADA"
+            texto_aviso = f"MANTEN LA MANO {estado_calib}... {calibrador.restante():.1f}s"
+        else:
+            texto_aviso = aviso if ahora < fin_aviso else ""
+
+        estado = ("DEMO (ESP32)" if modo_demo else
+                  f"CONTROL {'BINARIO' if modo_binario else 'PROPORCIONAL'}")
+        dibujar_interfaz_hud(frame, fps, filtro.estados, filtro.porcentajes, nombre_gesto, estado,
+                             enlace.descripcion, texto_aviso)
+        cv2.imshow("Control Bionico ESP32-S3 - MediaPipe HUD", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key in (27, ord("q"), ord("Q")):
+            break
+        elif key in (ord("a"), ord("A")):
+            calibrador.iniciar("abierto")
+        elif key in (ord("c"), ord("C")):
+            calibrador.iniciar("cerrado")
+        elif key in (ord("r"), ord("R")):
+            calib = calibracion_defecto()
+            guardar_calibracion(calib)
+            mostrar_aviso("CALIBRACION POR DEFECTO")
+        elif key in (ord("b"), ord("B")):
+            modo_binario = not modo_binario
+            mostrar_aviso(f"MODO {'BINARIO' if modo_binario else 'PROPORCIONAL'}")
+        elif key in (ord("d"), ord("D"), ord("m"), ord("M")):
+            modo_demo = not modo_demo
+            enlace.enviar("DEMO" if modo_demo else "STOP")
+            mostrar_aviso("DEMO ACTIVADA" if modo_demo else "CONTROL POR CAMARA")
+
+    # Cierre limpio: dejar la mano abierta
+    cap.release()
+    cv2.destroyAllWindows()
+    detector.cerrar()
+    enlace.enviar("OPEN")
     time.sleep(0.1)
-    arduino.close()
-    print("[SISTEMA] Conexión Serial cerrada correctamente.")
+    enlace.cerrar()
+    print("[SISTEMA] Cerrado correctamente.")
+
+
+if __name__ == "__main__":
+    main()

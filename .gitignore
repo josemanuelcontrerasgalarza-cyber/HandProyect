@@ -4,3 +4,10 @@ __pycache__/
 venv/
 .env
 .vscode/
+.pytest_cache/
+models/
+calibracion.json
+.venv-exe/
+build/
+dist/
+autoprueba.log
