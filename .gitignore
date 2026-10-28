@@ -3,5 +3,7 @@ __pycache__/
 .venv/
 venv/
 .env
-.vscode/models/
+.vscode/
+.pytest_cache/
+models/
 calibracion.json

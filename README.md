@@ -5,6 +5,9 @@ Control de una mano robótica mediante **visión artificial**: la webcam lee tu 
 mueve 5 servos a través de un **PCA9685**. Funciona por **USB** o **sin cable por WiFi**, y
 la ESP32 tiene además su propio **panel web** para controlarla desde el móvil.
 
+Incluye una **aplicación de escritorio completa** (`mano_app.py`) con cámara, control manual,
+editor de secuencias, calibración guiada, gráficas en tiempo real y consola.
+
 ## ✨ Novedades respecto a la versión Arduino UNO
 
 | | Antes (Arduino UNO) | Ahora (ESP32-S3) |
@@ -12,6 +15,7 @@ la ESP32 tiene además su propio **panel web** para controlarla desde el móvil.
 | Movimiento | Solo abierto / cerrado | **Proporcional 0-100 %** (los dedos copian la posición real) + modo binario con `B` |
 | Conexión | Solo USB, puerto `COM9` fijo | **USB autodetectado** (Linux y Windows) o **WiFi UDP** |
 | Control sin PC | No | **Panel web** en `http://mano.local`: sliders, gestos, demo |
+| Programa en el PC | Ventana OpenCV | **App de escritorio** con 6 pestañas (ver abajo) + versión ligera `hand_control.py` |
 | Calibración | Cambiar el código | **Por dedo, desde la web o por serie, guardada en la flash** |
 | Calibración de cámara | No | **Teclas `A` / `C`** ajustan a tu mano y se guardan |
 | Seguridad | Timeout | Timeout con **apertura lenta**, arranque escalonado de servos, `RELAX` |
@@ -181,9 +185,60 @@ La calibración de la cámara se guarda en `calibracion.json`.
 
 ---
 
-## 🎛️ 4. Calibrar los servos (una sola vez)
+## 🖥️ 4. Aplicación de escritorio
 
-Desde el **panel web** (`http://mano.local` o `http://192.168.4.1`) → sección *Calibración*:
+```bash
+python mano_app.py
+```
+
+Arriba eliges la conexión (**USB**, **WiFi** o **Simulación**) y pulsas **Conectar**. El
+desplegable **Fuente** indica quién mueve la mano en cada momento (cámara, sliders, secuencia o
+la demo de la ESP32): solo hay una a la vez, así nunca se pelean por los servos. El botón rojo
+**PARADA** (o la tecla `Esc`) deja de enviar y abre la mano.
+
+| Pestaña | Para qué sirve |
+|---|---|
+| 📷 **Cámara** | Vídeo con el esqueleto de tu mano, gesto reconocido, barras por dedo y esquema de la mano robótica. «Controlar la mano con la cámara» hace que la mano te copie. Modo binario, suavizado y calibración rápida. |
+| 🎚 **Manual** | Un slider por dedo, 11 gestos, demo de la ESP32, relajar servos y velocidad. |
+| 🎞 **Secuencias** | Editor de movimientos: añade poses (de la cámara, de los sliders o gestos), con tiempo de transición, pausa y curva. Reproduce con pausa, velocidad y bucle. Se guardan en `secuencias/` y trae 5 de ejemplo (Saludo, Contar 1-5, Ola, Piano, Agarre suave). |
+| 🎯 **Calibración** | Asistente guiado de la cámara (mano abierta → puño, con cuenta atrás) y ajuste de los pulsos de cada servo con prueba en vivo; se leen y se guardan en la ESP32. |
+| 📈 **Gráficas** | Pose enviada y lectura de la cámara en tiempo real, estadísticas y exportación a CSV. |
+| ⌨ **Consola** | Monitor serie integrado con historial (↑ / ↓), atajos y registro guardable. |
+
+Atajos: `Esc` parada · `F5` cámara · `F6` controlar con la cámara · `Ctrl+K` conectar ·
+`Ctrl+1…6` pestañas · `F1` ayuda.
+
+Para arrancar ya conectado:
+
+```bash
+python mano_app.py --usb
+```
+
+```bash
+python mano_app.py --wifi 192.168.4.1
+```
+
+### Probar sin la mano (simulador)
+
+`tools/simulador_esp32.py` imita a la ESP32 (mismo protocolo, calibración, failsafe…) por UDP.
+En una terminal:
+
+```bash
+python tools/simulador_esp32.py
+```
+
+En otra:
+
+```bash
+python mano_app.py --wifi 127.0.0.1
+```
+
+---
+
+## 🎛️ 5. Calibrar los servos (una sola vez)
+
+Desde la pestaña **🎯 Calibración** de la aplicación de escritorio, o desde el **panel web**
+(`http://mano.local` o `http://192.168.4.1`) → sección *Calibración*:
 
 1. Escribe un pulso en **Abierto**, pulsa **Probar** y ajusta hasta que el dedo quede totalmente abierto sin forzar el hilo.
 2. Haz lo mismo con **Cerrado**.
@@ -217,7 +272,42 @@ Los mismos comandos funcionan por USB, por UDP (puerto 4210) y desde la web.
 
 ---
 
+## 🧪 Tests
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+```bash
+python -m pytest
+```
+
+Comprueban la interpolación de secuencias, la calibración, el cálculo de flexión, la
+comunicación UDP, el simulador y que el formato de `STATUS` del firmware coincida con lo que
+entiende la aplicación.
+
+---
+
+## 🗂️ Estructura
+
+```text
+firmware/ManoBionicaESP32S3/   Firmware de la ESP32-S3 (+ panel web)
+mano/                          Núcleo en Python: enlace USB/WiFi, visión, secuencias
+mano/gui/                      Aplicación de escritorio (PySide6)
+mano_app.py                    Arranca la aplicación de escritorio
+hand_control.py                Versión ligera con ventana OpenCV
+tools/simulador_esp32.py       Simulador de la ESP32 para probar sin hardware
+tests/                         Tests automáticos
+sketch_aug25a/, sketch_aug25b/ Versión antigua para Arduino UNO
+```
+
+---
+
 ## 🛠️ Solución de problemas
+
+**La aplicación no abre en Kali (`libEGL.so.1` / `xcb`)**
+Instala las librerías de Qt: `sudo apt install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0`.
+
 
 **`AttributeError: module 'mediapipe' has no attribute 'solutions'`**
 Era el error de la versión anterior con Python 3.13. Usa el nuevo `hand_control.py` de este repositorio.
