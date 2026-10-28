@@ -1,12 +1,14 @@
 """Ventana principal de la aplicación de escritorio."""
+import os
 import sys
 
 from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QSizePolicy, QTabWidget, QToolBar, QWidget)
 
 from ..enlace import IP_AP_POR_DEFECTO, listar_puertos
+from ..rutas import DIRECTORIO_RECURSOS
 from .controlador import NOMBRES_FUENTE, Controlador
 from .estilo import HOJA_ESTILO
 from .pestanas import boton
@@ -266,6 +268,9 @@ def ejecutar(argv=None, conexion_inicial=None):
     app.setApplicationName("Mano Biónica")
     app.setStyle("Fusion")
     app.setStyleSheet(HOJA_ESTILO)
+    icono = os.path.join(DIRECTORIO_RECURSOS, "recursos", "mano.ico")
+    if os.path.exists(icono):
+        app.setWindowIcon(QIcon(icono))
     ventana = VentanaPrincipal(conexion_inicial)
     ventana.show()
     return app.exec()

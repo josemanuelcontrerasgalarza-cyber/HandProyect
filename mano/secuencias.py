@@ -8,9 +8,9 @@ import os
 import time
 from dataclasses import asdict, dataclass, field
 
-from .vision import DIRECTORIO_PROYECTO
+from .rutas import DIRECTORIO_DATOS
 
-DIRECTORIO_SECUENCIAS = os.path.join(DIRECTORIO_PROYECTO, "secuencias")
+DIRECTORIO_SECUENCIAS = os.path.join(DIRECTORIO_DATOS, "secuencias")
 
 # Mismos gestos que el firmware (% abierto: pulgar, índice, medio, anular, meñique)
 GESTOS = {

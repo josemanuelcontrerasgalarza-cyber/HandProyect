@@ -15,11 +15,12 @@ import numpy as np
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 
-DIRECTORIO_PROYECTO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUTA_MODELO = os.path.join(DIRECTORIO_PROYECTO, "models", "hand_landmarker.task")
+from .rutas import DIRECTORIO_DATOS, DIRECTORIO_RECURSOS
+
+RUTA_MODELO = os.path.join(DIRECTORIO_RECURSOS, "models", "hand_landmarker.task")
 URL_MODELO = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
               "hand_landmarker/float16/latest/hand_landmarker.task")
-RUTA_CALIBRACION = os.path.join(DIRECTORIO_PROYECTO, "calibracion.json")
+RUTA_CALIBRACION = os.path.join(DIRECTORIO_DATOS, "calibracion.json")
 
 DEDOS_NOMBRES = ["PULGAR", "INDICE", "MEDIO", "ANULAR", "MENIQUE"]
 DEDOS_NOMBRES_BONITOS = ["Pulgar", "Índice", "Medio", "Anular", "Meñique"]

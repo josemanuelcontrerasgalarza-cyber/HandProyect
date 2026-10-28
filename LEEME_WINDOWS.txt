@@ -1,0 +1,27 @@
+MANO BIONICA - ESP32-S3
+=======================
+
+COMO ABRIRLA
+  Doble clic en ManoBionica.exe (dentro de esta carpeta).
+  No muevas el .exe fuera de la carpeta: necesita la carpeta _internal.
+
+  Si Windows muestra "Windows protegio su PC": pulsa "Mas informacion"
+  y luego "Ejecutar de todas formas". Sale porque el programa no esta
+  firmado digitalmente, no porque tenga nada malo.
+
+CONECTAR LA MANO
+  USB:  conecta la ESP32-S3, elige "USB" arriba y pulsa "Conectar".
+        El puerto COM se detecta solo. Si no aparece, instala el driver
+        CH343/CP210x de tu placa o usa el conector USB nativo.
+  WiFi: conectate a la red "ManoBionica-S3" (clave mano12345), elige
+        "WiFi" con la IP 192.168.4.1 y pulsa "Conectar".
+
+USO RAPIDO
+  1. Pestana Calibracion -> "Empezar asistente" (mano abierta y puno).
+  2. Pestana Camara -> "Controlar la mano con la camara".
+  3. Esc o el boton rojo PARADA abren la mano y dejan de enviar.
+
+  Tu calibracion (calibracion.json) y tus secuencias (carpeta
+  "secuencias") se guardan en esta misma carpeta.
+
+  Mas informacion: README.md del proyecto en GitHub.

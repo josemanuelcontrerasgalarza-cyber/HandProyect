@@ -94,15 +94,46 @@ del firmware; si no consigue conectar en 8 s vuelve a crear su propia red.
 
 ---
 
-## 🐍 2. Instalar el programa de visión en Kali Linux
+## 🪟 2A. Windows: programa .exe (sin instalar Python)
+
+Hay dos formas de conseguir `ManoBionica.exe`:
+
+**Opción 1 — Descargarlo de GitHub (recomendado).** Cada vez que se suben cambios, GitHub
+compila el `.exe` automáticamente en un Windows y comprueba que arranca:
+
+1. En GitHub, abre la pestaña **Actions** → el último **Compilar** en verde.
+2. Abajo, en **Artifacts**, descarga **ManoBionica-Windows** (un `.zip`).
+3. Descomprímelo y abre `ManoBionica\ManoBionica.exe`.
+
+Si se crea una etiqueta de versión (`git tag v1.0.0` y `git push origin v1.0.0`), el `.zip`
+aparece además en **Releases** con enlace de descarga directo.
+En **Artifacts** también está **Firmware-ESP32S3** con el firmware ya compilado (`.bin`).
+
+**Opción 2 — Crearlo en tu PC.** Con Python instalado (python.org, marcando
+*Add Python to PATH*), haz doble clic en **`crear_exe.bat`**. Tarda unos minutos la primera vez y
+deja el programa en `dist\ManoBionica\ManoBionica.exe`.
+
+Notas:
+
+* Copia siempre la **carpeta completa** `ManoBionica` (el `.exe` necesita la carpeta `_internal`).
+* Pesa unos 600 MB descomprimido (~250 MB en `.zip`) porque lleva dentro Python, Qt, OpenCV y MediaPipe.
+* Si aparece *«Windows protegió su PC»*: **Más información → Ejecutar de todas formas**
+  (sale porque el programa no está firmado digitalmente).
+* La calibración y tus secuencias se guardan junto al `.exe`.
+
+---
+
+## 🐍 2B. Kali Linux / desde el código (Python)
 
 ```bash
 sudo apt update
 ```
 
 ```bash
-sudo apt install -y git python3 python3-pip python3-venv
+sudo apt install -y git python3 python3-pip python3-venv libgles2 libegl1
 ```
+
+(`libgles2` y `libegl1` los necesita MediaPipe ≥ 1.0 en Linux.)
 
 ```bash
 git clone https://github.com/josemanuelcontrerasgalarza-cyber/HandProyect.git
@@ -298,12 +329,17 @@ mano_app.py                    Arranca la aplicación de escritorio
 hand_control.py                Versión ligera con ventana OpenCV
 tools/simulador_esp32.py       Simulador de la ESP32 para probar sin hardware
 tests/                         Tests automáticos
+crear_exe.bat, mano_app.spec   Crear el .exe de Windows (PyInstaller)
+.github/workflows/compilar.yml Compila el .exe y el firmware en GitHub automáticamente
 sketch_aug25a/, sketch_aug25b/ Versión antigua para Arduino UNO
 ```
 
 ---
 
 ## 🛠️ Solución de problemas
+
+**`OSError: libGLESv2.so.2` al iniciar la cámara (Linux)**
+Falta una librería que usa MediaPipe: `sudo apt install -y libgles2 libegl1`.
 
 **La aplicación no abre en Kali (`libEGL.so.1` / `xcb`)**
 Instala las librerías de Qt: `sudo apt install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0`.
